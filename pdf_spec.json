@@ -1,0 +1,250 @@
+{
+  "title": "E4B + Serena Local Agent Bridge — Complete Setup Guide",
+  "author": "Walker Kirkpatrick",
+  "subject": "Settings and commands for running Gemma 4 E4B QAT with Serena MCP on Jetson Orin Nano 8GB",
+  "keywords": "E4B, Serena, MCP, Jetson, llama.cpp, local LLM, agent bridge",
+  "elements": [
+    {"type": "heading", "level": 1, "text": "E4B + Serena Local Agent Bridge"},
+    {"type": "paragraph", "text": "Complete Setup Guide — Jetson Orin Nano 8GB"},
+    {"type": "paragraph", "text": "Date: September 22, 2026 | Author: Walker Kirkpatrick"},
+    {"type": "paragraph", "text": "Repository: ~/projects/e4b-serena-settings/ (GitHub: drwjkirkpatrick-web/e4b-serena-settings, push pending)"},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "1. Hardware & Environment"},
+    {"type": "paragraph", "text": "Target Platform: NVIDIA Jetson Orin Nano 8GB"},
+    {"type": "paragraph", "text": "OS: Linux 5.15.199-tegra (aarch64)"},
+    {"type": "paragraph", "text": "RAM: 8GB unified LPDDR5 (CPU + GPU shared)"},
+    {"type": "paragraph", "text": "Power: Solar-charged Jackery Explorer 500 (100W panel, net 11.30W)"},
+    {"type": "paragraph", "text": "Power draw under load: 19.6W (GUI off)"},
+    {"type": "paragraph", "text": "Prerequisite: GUI must be OFF to free ~1.8GB RAM for the model."},
+
+    {"type": "heading", "level": 2, "text": "1.1 Stop GUI (REQUIRED before launching model)"},
+    {"type": "paragraph", "text": "Command: sudo systemctl stop gdm.service"},
+    {"type": "paragraph", "text": "This frees ~1.8GB RAM. The model (4.0GB) + Serena + Python bridge need the full 8GB pool."},
+    {"type": "paragraph", "text": "To restart GUI later: sudo systemctl start gdm.service"},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "2. E4B Model — llama-server Launch"},
+    {"type": "paragraph", "text": "Model: Gemma 4 E4B QAT (gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf)"},
+    {"type": "paragraph", "text": "File size: 4.0GB"},
+    {"type": "paragraph", "text": "Location: ~/models/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf"},
+    {"type": "paragraph", "text": "API: OpenAI-compatible (llama.cpp built-in)"},
+    {"type": "paragraph", "text": "Function calling: Confirmed working (structured tool_calls JSON)"},
+
+    {"type": "heading", "level": 2, "text": "2.1 Launch Command"},
+    {"type": "paragraph", "text": "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 setsid ~/llama.cpp/build/bin/llama-server \\"},
+    {"type": "paragraph", "text": "  -m ~/models/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf \\"},
+    {"type": "paragraph", "text": "  --alias gemma-4-e4b-qat \\"},
+    {"type": "paragraph", "text": "  --host 127.0.0.1 --port 8091 \\"},
+    {"type": "paragraph", "text": "  -ngl 99 -c 32768 -ctk q4_0 -ctv q4_0 \\"},
+    {"type": "paragraph", "text": "  -b 64 -ub 64 -fa on --jinja --fit off -np 1 \\"},
+    {"type": "paragraph", "text": "  > /tmp/e4b_server.log 2>&1 &"},
+
+    {"type": "heading", "level": 2, "text": "2.2 Server Parameters — All Flags Explained"},
+
+    {"type": "table", "headers": ["Flag", "Value", "Modified?", "Notes"], "rows": [
+      ["GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1", "Kept same", "Required for >4GB models on Jetson unified memory"],
+      ["-m (model)", "gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf", "Kept same", "4.0GB QAT quant, UD-Q4_K_XL"],
+      ["--alias", "gemma-4-e4b-qat", "Kept same", "Model name for API calls"],
+      ["--host", "127.0.0.1", "Kept same", "Localhost only"],
+      ["--port", "8091", "Kept same", "Dedicated E4B port"],
+      ["-ngl (GPU layers)", "99", "Kept same", "All layers on GPU"],
+      ["-c (context)", "32768", "Kept same", "32K context window"],
+      ["-ctk (KV cache type)", "q4_0", "Kept same", "4-bit KV cache saves memory"],
+      ["-ctv (KV cache value)", "q4_0", "Kept same", "4-bit KV values"],
+      ["-b (batch)", "64", "Kept same", "Prompt processing batch size"],
+      ["-ub (ubatch)", "64", "Kept same", "Physical batch size"],
+      ["-fa (flash attn)", "on", "Kept same", "Flash attention for speed"],
+      ["--jinja", "", "Kept same", "Proper chat template for function calling"],
+      ["--fit off", "", "MODIFIED", "Added for llama.cpp build 0b1bad1+ compatibility"],
+      ["-np (slots)", "1", "Kept same", "Single slot — all requests queue"],
+      ["setsid", "", "MODIFIED", "Detached execution — terminal wrapper times out at 420s"]
+    ]},
+
+    {"type": "paragraph", "text": "Note: --fit off is required by the new llama.cpp build. Without it, the server aborts when -ngl 99 is specified with an explicit context size."},
+    {"type": "paragraph", "text": "Note: setsid is REQUIRED for long generations. The terminal background wrapper adds overhead and times out at 420s. E4B generating 25K tokens at ~30 tok/s takes ~833s + reasoning = ~1000-1200s per turn."},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "3. Python Dependencies"},
+    {"type": "paragraph", "text": "pip install mcp httpx pyyaml"},
+    {"type": "paragraph", "text": "Serena: pip install serena-agent (verify: serena --version)"},
+    {"type": "paragraph", "text": "llama.cpp: must be built with GGML_CUDA=ON for Jetson GPU"},
+
+    {"type": "heading", "level": 2, "text": "3.1 Dependency Verification"},
+    {"type": "paragraph", "text": "python3 -c \"import mcp; print('mcp OK')\""},
+    {"type": "paragraph", "text": "python3 -c \"import httpx; print('httpx OK')\""},
+    {"type": "paragraph", "text": "python3 -c \"import yaml; print('pyyaml OK')\""},
+    {"type": "paragraph", "text": "which serena  (should return /home/walker/.local/bin/serena)"},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "4. Serena MCP Configuration"},
+    {"type": "paragraph", "text": "Serena version: 1.7.0"},
+    {"type": "paragraph", "text": "Config file: ~/.serena/serena_config.yml"},
+    {"type": "paragraph", "text": "Language backend: LSP (SolidLSP — pyright for Python projects)"},
+
+    {"type": "heading", "level": 2, "text": "4.1 Serena Config Settings"},
+
+    {"type": "table", "headers": ["Setting", "Value", "Modified?", "Notes"], "rows": [
+      ["language_backend", "LSP", "Kept same", "Language Server Protocol for code analysis"],
+      ["gui_log_window", "false", "Kept same", "No GUI window (headless)"],
+      ["web_dashboard", "true", "Kept same", "Dashboard on localhost:24282+"],
+      ["web_dashboard_open_on_launch", "true", "Kept same", "Auto-opens (no display = harmless warning)"],
+      ["tool_timeout", "240", "Kept same", "Per-tool execution timeout in seconds"],
+      ["--context", "(omitted)", "MODIFIED", "Use DEFAULT context, NOT 'ide'"],
+      ["log_level", "20", "Kept same", "INFO level (10=debug, 20=info, 30=warning)"]
+    ]},
+
+    {"type": "paragraph", "text": "CRITICAL: Do NOT use --context ide. The ide context excludes file tools that are essential for agentic editing: create_text_file, read_file, list_dir, find_file, execute_shell_command. Use the default context (omit --context entirely) to expose all 29 tools."},
+
+    {"type": "heading", "level": 2, "text": "4.2 MCP Server Connection (in bridge script)"},
+    {"type": "paragraph", "text": "Serena is started as a subprocess via stdio transport:"},
+    {"type": "paragraph", "text": "command: /home/walker/.local/bin/serena"},
+    {"type": "paragraph", "text": "args: [\"start-mcp-server\", \"--project\", PROJECT_DIR]"},
+    {"type": "paragraph", "text": "Note: No --context flag (use default for all 29 tools)"},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "5. Agent Bridge Settings"},
+    {"type": "paragraph", "text": "The bridge script connects E4B to Serena MCP tools via a ReAct agentic loop. Settings are in agent_config.yaml."},
+
+    {"type": "heading", "level": 2, "text": "5.1 All Bridge Settings"},
+
+    {"type": "table", "headers": ["Setting", "Value", "Modified?", "Notes"], "rows": [
+      ["LLM_BASE_URL", "http://127.0.0.1:8091/v1", "Kept same", "E4B llama-server endpoint"],
+      ["LLM_MODEL", "gemma-4-e4b-qat", "Kept same", "Matches --alias flag"],
+      ["MAX_TOKENS", "25000", "MODIFIED", "Started at 12K, increased to 17K, then 25K for large games"],
+      ["TEMPERATURE", "0.6", "Kept same", "Balanced creativity + correctness"],
+      ["TOP_P", "0.95", "Kept same", "Nucleus sampling threshold"],
+      ["httpx timeout", "6000.0s", "MODIFIED", "Started at 600s (failed), then 4000s, then 6000s for 25K tokens"],
+      ["MAX_TURNS", "30", "MODIFIED", "Increased from 20 to 30 for complex game generation"],
+      ["max_tool_result_chars", "8000", "Kept same", "Truncate long Serena tool results to keep context manageable"],
+      ["tool_choice", "auto", "Kept same", "Let model decide when to call tools"],
+      ["Serena context", "(default)", "MODIFIED", "Changed FROM 'ide' TO default — ide strips file tools"]
+    ]},
+
+    {"type": "paragraph", "text": "Why 6000s timeout? E4B generates at ~30 tok/s. 25K tokens = ~833s generation. With reasoning overhead (E4B thinks before acting), turns take 1000-1200s. Default httpx timeout (600s) kills the request mid-generation. 6000s gives 5x headroom."},
+    {"type": "paragraph", "text": "Why 25K max_tokens? Prompt with 29 Serena tool definitions = ~13,688 tokens. E4B reasoning_content = 500-2000 tokens. Game code output = 8,000-15,000 tokens. 25K gives enough room for reasoning + complete game in one turn."},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "6. System Prompt (for forcing tool use)"},
+    {"type": "paragraph", "text": "The system prompt combines a game-development prompt with agent instructions that FORCE the model to use Serena tools:"},
+
+    {"type": "paragraph", "text": "CRITICAL INSTRUCTIONS:"},
+    {"type": "paragraph", "text": "- You MUST use the create_text_file tool to write files. Do NOT output code as text."},
+    {"type": "paragraph", "text": "- The create_text_file tool takes two arguments: relative_path (e.g. \"index.html\") and content (the full file text)."},
+    {"type": "paragraph", "text": "- When asked to create a game, call create_text_file with relative_path=\"index.html\" and the complete HTML as content."},
+    {"type": "paragraph", "text": "- After writing, use read_file to verify the file was created correctly."},
+    {"type": "paragraph", "text": "- Think step by step about what tools to call."},
+
+    {"type": "paragraph", "text": "Fallback: If E4B returns HTML as text content despite the prompt, the bridge script automatically extracts the HTML and saves it via Serena's create_text_file tool. This handles the common case where E4B outputs code in a markdown code block instead of calling the tool."},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "7. Complete Startup Procedure"},
+    {"type": "paragraph", "text": "Step-by-step from cold boot to running agent:"},
+
+    {"type": "heading", "level": 2, "text": "Step 1: Stop GUI"},
+    {"type": "paragraph", "text": "sudo systemctl stop gdm.service"},
+
+    {"type": "heading", "level": 2, "text": "Step 2: Start E4B Server"},
+    {"type": "paragraph", "text": "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 setsid \\"},
+    {"type": "paragraph", "text": "  ~/llama.cpp/build/bin/llama-server \\"},
+    {"type": "paragraph", "text": "  -m ~/models/gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf \\"},
+    {"type": "paragraph", "text": "  --alias gemma-4-e4b-qat --host 127.0.0.1 --port 8091 \\"},
+    {"type": "paragraph", "text": "  -ngl 99 -c 32768 -ctk q4_0 -ctv q4_0 \\"},
+    {"type": "paragraph", "text": "  -b 64 -ub 64 -fa on --jinja --fit off -np 1 \\"},
+    {"type": "paragraph", "text": "  > /tmp/e4b_server.log 2>&1 &"},
+
+    {"type": "heading", "level": 2, "text": "Step 3: Wait for Server"},
+    {"type": "paragraph", "text": "for i in $(seq 1 60); do"},
+    {"type": "paragraph", "text": "  curl -s http://127.0.0.1:8091/health | grep -q ok && break"},
+    {"type": "paragraph", "text": "  sleep 1"},
+    {"type": "paragraph", "text": "done"},
+
+    {"type": "heading", "level": 2, "text": "Step 4: Scaffold New Project (optional)"},
+    {"type": "paragraph", "text": "cd ~/projects/e4b-serena-settings"},
+    {"type": "paragraph", "text": "./new_project.sh ~/projects/my-new-game \"Create a chess game\""},
+    {"type": "paragraph", "text": "cd ~/projects/my-new-game"},
+    {"type": "paragraph", "text": "# Edit agent_config.yaml, game_prompt.txt, system_prompt.txt as needed"},
+
+    {"type": "heading", "level": 2, "text": "Step 5: Launch Agent Bridge"},
+    {"type": "paragraph", "text": "cd ~/projects/my-new-game"},
+    {"type": "paragraph", "text": "setsid python3 agent_bridge.py > /tmp/run.log 2>&1 &"},
+    {"type": "paragraph", "text": "Or use the startup script: ./start_agent.sh"},
+
+    {"type": "heading", "level": 2, "text": "Step 6: Monitor Progress"},
+    {"type": "paragraph", "text": "python3 -c \"import json; [print(f'[{d.get(\\\"type\\\")}] turn={d.get(\\\"turn\\\",\\\"?\\\")} {d.get(\\\"summary\\\",\\\"\\\")[:200]}') for l in open('agent_log.json') for d in [json.loads(l)]]\""},
+    {"type": "paragraph", "text": "Check generation slot: curl -s http://127.0.0.1:8091/slots"},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "8. Gotchas (Learned the Hard Way)"},
+    {"type": "paragraph", "text": "1. MCP SDK uses snake_case: tool.input_schema, NOT tool.inputSchema. Pydantic throws AttributeError."},
+    {"type": "paragraph", "text": "2. Serena --context ide excludes file tools (create_text_file, read_file, list_dir, find_file, execute_shell_command). Use default context."},
+    {"type": "paragraph", "text": "3. E4B function calling works via llama.cpp OpenAI API — produces proper tool_calls with JSON args and finish_reason: tool_calls. No text parsing needed."},
+    {"type": "paragraph", "text": "4. E4B reasoning is in reasoning_content field, separate from content. Visible in API response but not in conversation history."},
+    {"type": "paragraph", "text": "5. Serena starts a web dashboard on localhost:24282+ even with no display. Harmless warning."},
+    {"type": "paragraph", "text": "6. Pyright LSP auto-starts for Python projects (~3s). HTML-only projects: does nothing, does not block."},
+    {"type": "paragraph", "text": "7. Tool result truncation: Serena initial_instructions returns ~15K chars. Truncate results >8K chars to keep LLM context manageable."},
+    {"type": "paragraph", "text": "8. E4B may output code as text instead of calling create_text_file. Force tool use in prompt; add fallback extraction in bridge."},
+    {"type": "paragraph", "text": "9. Single E4B slot (-np 1): concurrent requests queue. Do not run multiple bridges at once."},
+    {"type": "paragraph", "text": "10. GPU memory does NOT release after killing llama-server on Jetson. Reboot to restart the server."},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "9. Verified Test Results"},
+    {"type": "paragraph", "text": "Three games tested with E4B + Serena on Jetson Orin Nano 8GB:"},
+
+    {"type": "table", "headers": ["Game", "Tokens", "Max Tok/Turn", "Time", "Lines", "Features", "Tool Calls"], "rows": [
+      ["Counter App (simple)", "31,538", "12,000", "217s (3.6m)", "197", "13/13", "3"],
+      ["Dungeon Crawler (17K)", "44,598", "17,000", "1775s (29.6m)", "958", "24/24", "1"],
+      ["Dungeon Crawler (12K)", "18,040", "12,000", "950s (15.8m)", "995", "24/24", "0 (text)"],
+      ["NOVA-3 Space Trader (25K)", "87,551", "25,000", "2413s (40.2m)", "1451", "45/45", "1"]
+    ]},
+
+    {"type": "paragraph", "text": "Note: The 12K dungeon crawler run produced HTML as text (no tool call), but the fallback extractor saved it. The 17K run used create_text_file directly."},
+    {"type": "paragraph", "text": "Note: NOVA-3 features were 42/44 from E4B output; 3 bugs fixed manually (Galaxy class undefined, M-key map missing, CRT scanlines missing) to reach 45/45."},
+    {"type": "paragraph", "text": "Note: Prior Ornith 9B single-shot FAILED on the same dungeon crawler prompt (9,367 tok, 1013s). E4B at 4B params succeeded."},
+
+    {"type": "heading", "level": 2, "text": "Energy Analysis (solar setup)"},
+    {"type": "paragraph", "text": "Solar: 100W panel x 19% efficiency x 70% charge x 85% wiring = 11.30W net"},
+    {"type": "paragraph", "text": "Jackery Explorer 500: ~500Wh capacity"},
+
+    {"type": "table", "headers": ["Game", "Energy (Wh)", "Solar Recharge", "Jackery Drain", "Efficiency (tok/Wh)"], "rows": [
+      ["NOVA-3 (25K)", "13.14", "69.8 min", "2.63%", "6,663"],
+      ["Dungeon (17K)", "9.67", "51.3 min", "1.93%", "4,614"],
+      ["Counter (12K)", "1.18", "6.3 min", "0.24%", "26,645"],
+      ["EV Nova (Ornith 9B)", "5.42", "28.8 min", "1.08%", "1,756"]
+    ]},
+
+    {"type": "paragraph", "text": "E4B is 3.8x more energy-efficient than Ornith per token (6,663 vs 1,756 tok/Wh). The 4B model draws the same 19.6W but generates faster and uses fewer tokens per turn."},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "10. Repository Files"},
+    {"type": "paragraph", "text": "Location: ~/projects/e4b-serena-settings/"},
+
+    {"type": "table", "headers": ["File", "Purpose"], "rows": [
+      ["agent_bridge.py", "Configurable bridge script — reads agent_config.yaml"],
+      ["agent_config.yaml", "All settings in one editable file"],
+      ["serena_e4b_bridge.py", "Original hardcoded version (reference)"],
+      ["start_agent.sh", "Universal startup: GUI stop, server check, dep verify, launch"],
+      ["new_project.sh", "Scaffolds new projects from template"],
+      ["game_prompt.txt", "Example game prompt (NOVA-3)"],
+      ["system_prompt.txt", "Example system prompt for HTML game gen"],
+      ["README.md", "Full config reference, gotchas, verified results"]
+    ]},
+
+    {"type": "heading", "level": 2, "text": "Quick Start for New Projects"},
+    {"type": "paragraph", "text": "cd ~/projects/e4b-serena-settings"},
+    {"type": "paragraph", "text": "./new_project.sh ~/projects/my-game \"Create a chess game in HTML5\""},
+    {"type": "paragraph", "text": "cd ~/projects/my-game"},
+    {"type": "paragraph", "text": "# Edit agent_config.yaml and game_prompt.txt as needed"},
+    {"type": "paragraph", "text": "./start_agent.sh"}
+  ]
+}
