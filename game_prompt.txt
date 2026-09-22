@@ -1,0 +1,65 @@
+Create a complete HTML5 top-down dungeon crawler called "CRYPT OF THE SHADOW KING".
+
+A retro Zelda-style top-down dungeon adventure. The player explores procedurally generated dungeon floors, fights monsters, collects keys to unlock doors, and descends deeper via staircases. Permadeath — die and restart from floor 1.
+
+CORE GAME:
+1. Tile-based map (32px tiles), top-down view, smooth movement with arrow keys/WASD
+2. Procedural dungeon: 4-6 rooms per floor connected by corridors, walls around rooms
+3. Melee attack with spacebar — sword swings in facing direction (short range arc)
+4. Locked doors require keys; staircase descends to next harder floor
+5. Player HP (starts at 5), takes damage from enemy contact and projectiles
+6. Permadeath: HP 0 = game over, restart at floor 1. Score = floor reached + gold.
+7. High score saved to localStorage
+8. Gold dropped by enemies, collected for score
+
+ENEMIES (3 types only):
+- Rat: slow chase, 1 HP, 5 gold
+- Skeleton: faster chase, 2 HP, 10 gold
+- Mage: ranged, shoots fireballs, keeps distance, 2 HP, 15 gold
+- Enemies activate when player enters their room
+
+ITEMS:
+- Health potion (heal 2 HP)
+- Key (for locked doors)
+- Chest (20-50 gold)
+
+VISUALS (canvas-drawn, pixel-art style):
+- Player: green adventurer sprite, directional facing, sword visible during attack
+- Walls: gray stone blocks with brick pattern
+- Floor: dark stone with subtle variation
+- Doors: brown wood (locked = with padlock)
+- Stairs: dark descending steps
+- Enemies: rat (small brown), skeleton (white), mage (purple robe)
+- Items: potion (red flask), key (gold), chest (brown box)
+- Health bar above player and enemies
+- Sword slash animation on attack
+- Floating damage numbers on hits
+- Particle burst on enemy death
+- Screen flash red when player takes damage
+
+AUDIO (Web Audio API):
+- Sword swing: short metallic blip
+- Enemy hit: thud
+- Enemy death: descending tone
+- Player damage: low harsh tone
+- Item pickup: chime
+- Floor descend: dungeon tone
+- M key toggles mute
+
+UI:
+- Title screen: "CRYPT OF THE SHADOW KING" in glowing font, "PRESS SPACE TO ENTER"
+- HUD: health hearts top-left, floor number top-center, gold top-right
+- Game over: "YOU DIED" in red, floor reached, gold earned, "PRESS SPACE TO RESTART"
+- Pause with P key
+
+STYLE:
+- CRT scanline overlay, vignette, pixelated rendering
+- Dark palette: grays, browns, torch orange, red
+- Monospace font
+
+DIFFICULTY:
+- More enemies per floor at depth
+- Enemy HP and damage scale with floor number
+- Floor size grows slightly with depth
+
+Keep it complete and playable. Output the full HTML file now.

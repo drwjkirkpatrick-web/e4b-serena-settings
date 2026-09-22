@@ -1,0 +1,5 @@
+agent_log.json
+__pycache__/
+*.pyc
+.serena/
+index.html
