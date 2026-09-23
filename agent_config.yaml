@@ -10,6 +10,7 @@ llm:
   temperature: 0.6
   top_p: 0.95
   timeout: 4000.0          # httpx timeout in seconds (CRITICAL: default 600s kills E4B)
+  context_window: 32768    # model's context window (must match -c flag on server)
 
 # Agent loop
 agent:

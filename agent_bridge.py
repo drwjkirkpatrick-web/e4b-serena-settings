@@ -27,6 +27,7 @@ def load_config(config_path: str) -> dict:
             "temperature": 0.6,
             "top_p": 0.95,
             "timeout": 4000.0,
+            "context_window": 32768,  # model's context window size in tokens
         },
         "agent": {"max_turns": 30, "max_tool_result_chars": 8000},
         "serena": {"bin": "/home/walker/.local/bin/serena", "context": "", "project": ""},
@@ -81,6 +82,111 @@ def log_event(event: dict, log_file: str):
     with open(log_file, "a") as f:
         f.write(json.dumps(event) + "\n")
     print(f"[{event.get('type','?')}] {event.get('summary','')}", flush=True)
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token for English/code text."""
+    return max(1, len(text) // 4)
+
+
+def estimate_messages_tokens(messages: list) -> int:
+    """Estimate total tokens in a message list (content + tool calls + overhead)."""
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "") or ""
+        total += estimate_tokens(content)
+        # Tool calls have function name + arguments as JSON
+        for tc in msg.get("tool_calls", []):
+            total += estimate_tokens(tc.get("function", {}).get("name", ""))
+            total += estimate_tokens(tc.get("function", {}).get("arguments", ""))
+        # Role tags and structural overhead per message
+        total += 4
+    return total
+
+
+def truncate_message(msg: dict, max_chars: int = 4000) -> dict:
+    """Truncate a single message's content if it's too long.
+    Keeps beginning and end with a notice in the middle.
+    Does NOT truncate tool_call arguments (those are structural)."""
+    content = msg.get("content", "") or ""
+    if len(content) <= max_chars:
+        return msg
+    half = max_chars // 2
+    truncated = content[:half] + f"\n\n[... truncated {len(content) - max_chars} chars to fit context ...]\n\n" + content[-half:]
+    new_msg = dict(msg)
+    new_msg["content"] = truncated
+    return new_msg
+
+
+def trim_context(messages: list, max_tokens: int, max_output_tokens: int,
+                 tool_defs_tokens: int) -> tuple:
+    """
+    Trim conversation history to fit within the model's context window.
+
+    Two-phase strategy:
+    Phase 1 — Truncate large message contents:
+      Replace huge assistant outputs (e.g. full HTML files) with truncated
+      versions. Once a file is written via create_text_file, the full content
+      doesn't need to stay in history — a truncated preview is enough.
+
+    Phase 2 — Drop old messages:
+      Always keep: system message (index 0), first user message (the task)
+      Always keep: the last few messages (most recent context)
+      Drop middle messages, replacing with a summary notice
+
+    Returns (trimmed_messages, num_dropped)
+    """
+    if len(messages) <= 4 and estimate_messages_tokens(messages) <= max_tokens:
+        return messages, 0
+
+    # Budget for conversation messages (excluding tool defs + output reserve)
+    budget = max_tokens - tool_defs_tokens - max_output_tokens - 500
+
+    # Phase 1: Truncate large individual message contents
+    # Keep first 2000 chars of any message > 6000 chars (enough for context)
+    max_msg_chars = 6000
+    truncated_msgs = []
+    for msg in messages:
+        truncated_msgs.append(truncate_message(msg, max_msg_chars))
+
+    current = estimate_messages_tokens(truncated_msgs)
+    if current <= budget:
+        return truncated_msgs, 0
+
+    # Phase 2: Drop old middle messages
+    # System prompt (msg 0) and initial user task (msg 1) are sacred
+    system_msg = truncated_msgs[0]
+    task_msg = truncated_msgs[1]
+    sacred_tokens = estimate_messages_tokens([system_msg, task_msg])
+
+    # Keep the last N messages (recent context)
+    keep_recent = min(6, len(truncated_msgs) - 2)
+    recent = truncated_msgs[-keep_recent:]
+
+    # Shrink recent window if still overflowing
+    while keep_recent > 2 and sacred_tokens + estimate_messages_tokens(recent) > budget:
+        keep_recent -= 2
+        recent = truncated_msgs[-keep_recent:]
+
+    # Also truncate recent messages more aggressively if needed
+    while sacred_tokens + estimate_messages_tokens(recent) > budget and max_msg_chars > 1000:
+        max_msg_chars = max_msg_chars // 2
+        recent = [truncate_message(m, max_msg_chars) for m in truncated_msgs[-keep_recent:]]
+
+    dropped_count = len(messages) - 2 - keep_recent
+    if dropped_count <= 0:
+        # No messages dropped, but we truncated contents
+        return [system_msg, task_msg] + recent, 0
+
+    # Add a notice about dropped context
+    notice = {
+        "role": "system",
+        "content": f"[Note: {dropped_count} earlier messages were trimmed to fit context window. "
+                   f"The task and recent context are preserved.]"
+    }
+
+    trimmed = [system_msg, task_msg, notice] + recent
+    return trimmed, dropped_count
 
 
 async def get_serena_tools(session: ClientSession) -> list:
@@ -152,6 +258,11 @@ async def run_agent(task_prompt: str, cfg: dict, project_dir: str, log_file: str
     system_prompt = build_system_prompt(cfg, project_dir)
     max_truncate = cfg["agent"]["max_tool_result_chars"]
     output_filename = cfg["output"]["filename"]
+    context_window = cfg["llm"].get("context_window", 32768)
+    max_output_tokens = cfg["llm"]["max_tokens"]
+
+    # Estimate tool definition tokens (computed once after tools are discovered)
+    tool_defs_tokens = 0
 
     log_event({"type": "start", "summary": f"Agent starting: {task_prompt[:80]}..."}, log_file)
 
@@ -161,6 +272,10 @@ async def run_agent(task_prompt: str, cfg: dict, project_dir: str, log_file: str
             tools = await get_serena_tools(session)
             tool_names = [t["function"]["name"] for t in tools]
             log_event({"type": "tools", "summary": f"Discovered {len(tools)} Serena tools", "tools": tool_names}, log_file)
+
+            # Estimate token cost of tool definitions
+            tool_defs_tokens = estimate_tokens(json.dumps(tools))
+            log_event({"type": "info", "summary": f"Tool definitions: ~{tool_defs_tokens} tokens, context window: {context_window}"}, log_file)
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -172,7 +287,14 @@ async def run_agent(task_prompt: str, cfg: dict, project_dir: str, log_file: str
             start_time = time.time()
 
             for turn in range(1, cfg["agent"]["max_turns"] + 1):
-                log_event({"type": "llm_call", "summary": f"Turn {turn}: calling LLM ({len(messages)} msgs)", "turn": turn}, log_file)
+                # Trim conversation history to fit context window
+                messages, dropped = trim_context(
+                    messages, context_window, max_output_tokens, tool_defs_tokens
+                )
+                if dropped > 0:
+                    log_event({"type": "context_trim", "summary": f"Turn {turn}: trimmed {dropped} messages to fit {context_window} token context window", "turn": turn, "dropped": dropped}, log_file)
+
+                log_event({"type": "llm_call", "summary": f"Turn {turn}: calling LLM ({len(messages)} msgs, ~{estimate_messages_tokens(messages)} tok)", "turn": turn}, log_file)
 
                 try:
                     response = call_llm(messages, tools, cfg)
@@ -294,6 +416,7 @@ if __name__ == "__main__":
     print(f"  Model:    {cfg['llm']['model']} at {cfg['llm']['base_url']}")
     print(f"  Project:  {project_dir}")
     print(f"  Tokens:   {cfg['llm']['max_tokens']} per turn")
+    print(f"  Context:  {cfg['llm'].get('context_window', 32768)} window")
     print(f"  Timeout:  {cfg['llm']['timeout']}s")
     print(f"  Turns:    {cfg['agent']['max_turns']}")
     print(f"  Task:     {task[:80]}...")
