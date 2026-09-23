@@ -123,7 +123,8 @@
       ["MAX_TURNS", "30", "MODIFIED", "Increased from 20 to 30 for complex game generation"],
       ["max_tool_result_chars", "8000", "Kept same", "Truncate long Serena tool results to keep context manageable"],
       ["tool_choice", "auto", "Kept same", "Let model decide when to call tools"],
-      ["Serena context", "(default)", "MODIFIED", "Changed FROM 'ide' TO default — ide strips file tools"]
+      ["Serena context", "(default)", "MODIFIED", "Changed FROM 'ide' TO default — ide strips file tools"],
+      ["context_window", "32768", "NEW", "Added for auto-trimming. Must match server -c flag. Bridge trims history to fit."]
     ]},
 
     {"type": "paragraph", "text": "Why 6000s timeout? E4B generates at ~30 tok/s. 25K tokens = ~833s generation. With reasoning overhead (E4B thinks before acting), turns take 1000-1200s. Default httpx timeout (600s) kills the request mid-generation. 6000s gives 5x headroom."},
@@ -131,7 +132,29 @@
 
     {"type": "pagebreak"},
 
-    {"type": "heading", "level": 1, "text": "6. System Prompt (for forcing tool use)"},
+    {"type": "heading", "level": 1, "text": "6. Context Window Management"},
+    {"type": "paragraph", "text": "The bridge auto-trims conversation history before each LLM call to prevent context window overflow (400 Bad Request errors)."},
+    {"type": "paragraph", "text": "Problem: Multi-turn conversations accumulate tokens fast. System prompt + 29 tool defs = ~14K tokens. Each E4B output = up to 25K tokens. Turn 2 input already exceeds 32K context. Without trimming, turn 4 crashes with HTTP 400."},
+    {"type": "paragraph", "text": "Solution: Two-phase trimming before every LLM call:"},
+
+    {"type": "heading", "level": 2, "text": "Phase 1 — Truncate Large Message Contents"},
+    {"type": "paragraph", "text": "Any message content > 6000 chars is truncated to head + tail with a notice. This handles the main culprit: E4B outputs full HTML files (50K+ chars). Once written to disk by Serena, the full content does not need to stay in conversation history — a truncated preview is sufficient for context."},
+
+    {"type": "heading", "level": 2, "text": "Phase 2 — Drop Old Middle Messages"},
+    {"type": "paragraph", "text": "If still over budget after Phase 1, old middle messages are dropped. Always preserved: system prompt (msg 0), user task (msg 1), and last 6 messages (recent context). A notice is inserted explaining what was trimmed. Recent window shrinks further if needed."},
+
+    {"type": "heading", "level": 2, "text": "Token Budget Calculation"},
+    {"type": "paragraph", "text": "budget = context_window - tool_defs_tokens - max_output_tokens - 500 (safety margin)"},
+    {"type": "paragraph", "text": "Example: 32768 - 3500 - 25000 - 500 = 3768 tokens available for conversation history."},
+    {"type": "paragraph", "text": "Token estimation: ~4 chars per token for English/code text."},
+    {"type": "paragraph", "text": "Config: context_window field in agent_config.yaml (must match server -c flag)."},
+
+    {"type": "heading", "level": 2, "text": "Verified Trimming Test"},
+    {"type": "paragraph", "text": "Simulated ASTRO MINER overflow (80K tokens across 5 messages) trimmed to 3.4K tokens — fits 32K context with 25K output reserve. Small conversations (under budget) are passed through unchanged."},
+
+    {"type": "pagebreak"},
+
+    {"type": "heading", "level": 1, "text": "7. System Prompt (for forcing tool use)"},
     {"type": "paragraph", "text": "The system prompt combines a game-development prompt with agent instructions that FORCE the model to use Serena tools:"},
 
     {"type": "paragraph", "text": "CRITICAL INSTRUCTIONS:"},
@@ -145,7 +168,7 @@
 
     {"type": "pagebreak"},
 
-    {"type": "heading", "level": 1, "text": "7. Complete Startup Procedure"},
+    {"type": "heading", "level": 1, "text": "8. Complete Startup Procedure"},
     {"type": "paragraph", "text": "Step-by-step from cold boot to running agent:"},
 
     {"type": "heading", "level": 2, "text": "Step 1: Stop GUI"},
@@ -183,7 +206,7 @@
 
     {"type": "pagebreak"},
 
-    {"type": "heading", "level": 1, "text": "8. Gotchas (Learned the Hard Way)"},
+    {"type": "heading", "level": 1, "text": "9. Gotchas (Learned the Hard Way)"},
     {"type": "paragraph", "text": "1. MCP SDK uses snake_case: tool.input_schema, NOT tool.inputSchema. Pydantic throws AttributeError."},
     {"type": "paragraph", "text": "2. Serena --context ide excludes file tools (create_text_file, read_file, list_dir, find_file, execute_shell_command). Use default context."},
     {"type": "paragraph", "text": "3. E4B function calling works via llama.cpp OpenAI API — produces proper tool_calls with JSON args and finish_reason: tool_calls. No text parsing needed."},
@@ -194,28 +217,32 @@
     {"type": "paragraph", "text": "8. E4B may output code as text instead of calling create_text_file. Force tool use in prompt; add fallback extraction in bridge."},
     {"type": "paragraph", "text": "9. Single E4B slot (-np 1): concurrent requests queue. Do not run multiple bridges at once."},
     {"type": "paragraph", "text": "10. GPU memory does NOT release after killing llama-server on Jetson. Reboot to restart the server."},
+    {"type": "paragraph", "text": "11. Context window overflow: multi-turn conversations accumulate tokens fast (14K system + 3.5K tools + 25K per turn). Bridge auto-trims before each LLM call — Phase 1 truncates large message contents, Phase 2 drops old middle messages. Configurable via context_window in YAML."},
 
     {"type": "pagebreak"},
 
-    {"type": "heading", "level": 1, "text": "9. Verified Test Results"},
-    {"type": "paragraph", "text": "Three games tested with E4B + Serena on Jetson Orin Nano 8GB:"},
+    {"type": "heading", "level": 1, "text": "10. Verified Test Results"},
+    {"type": "paragraph", "text": "Four games tested with E4B + Serena on Jetson Orin Nano 8GB:"},
 
     {"type": "table", "headers": ["Game", "Tokens", "Max Tok/Turn", "Time", "Lines", "Features", "Tool Calls"], "rows": [
       ["Counter App (simple)", "31,538", "12,000", "217s (3.6m)", "197", "13/13", "3"],
       ["Dungeon Crawler (17K)", "44,598", "17,000", "1775s (29.6m)", "958", "24/24", "1"],
       ["Dungeon Crawler (12K)", "18,040", "12,000", "950s (15.8m)", "995", "24/24", "0 (text)"],
-      ["NOVA-3 Space Trader (25K)", "87,551", "25,000", "2413s (40.2m)", "1451", "45/45", "1"]
+      ["NOVA-3 Space Trader (25K)", "87,551", "25,000", "2413s (40.2m)", "1451", "45/45", "1"],
+      ["ASTRO MINER (25K)", "87,493", "25,000", "2420s (40.3m)", "1379", "38/38", "1"]
     ]},
 
     {"type": "paragraph", "text": "Note: The 12K dungeon crawler run produced HTML as text (no tool call), but the fallback extractor saved it. The 17K run used create_text_file directly."},
     {"type": "paragraph", "text": "Note: NOVA-3 features were 42/44 from E4B output; 3 bugs fixed manually (Galaxy class undefined, M-key map missing, CRT scanlines missing) to reach 45/45."},
     {"type": "paragraph", "text": "Note: Prior Ornith 9B single-shot FAILED on the same dungeon crawler prompt (9,367 tok, 1013s). E4B at 4B params succeeded."},
+    {"type": "paragraph", "text": "Note: ASTRO MINER is the first game with a perfect score — 38/38 features, zero manual fixes needed. JS syntax valid out of the box. Hit context overflow on turn 4 (400 error) because turns 2-3 re-output the full game as text; the context trimmer was added to fix this for future runs."},
 
     {"type": "heading", "level": 2, "text": "Energy Analysis (solar setup)"},
     {"type": "paragraph", "text": "Solar: 100W panel x 19% efficiency x 70% charge x 85% wiring = 11.30W net"},
     {"type": "paragraph", "text": "Jackery Explorer 500: ~500Wh capacity"},
 
     {"type": "table", "headers": ["Game", "Energy (Wh)", "Solar Recharge", "Jackery Drain", "Efficiency (tok/Wh)"], "rows": [
+      ["ASTRO MINER (25K)", "13.16", "69.9 min", "2.63%", "6,648"],
       ["NOVA-3 (25K)", "13.14", "69.8 min", "2.63%", "6,663"],
       ["Dungeon (17K)", "9.67", "51.3 min", "1.93%", "4,614"],
       ["Counter (12K)", "1.18", "6.3 min", "0.24%", "26,645"],
@@ -226,7 +253,7 @@
 
     {"type": "pagebreak"},
 
-    {"type": "heading", "level": 1, "text": "10. Repository Files"},
+    {"type": "heading", "level": 1, "text": "11. Repository Files"},
     {"type": "paragraph", "text": "Location: ~/projects/e4b-serena-settings/"},
 
     {"type": "table", "headers": ["File", "Purpose"], "rows": [
@@ -237,7 +264,10 @@
       ["new_project.sh", "Scaffolds new projects from template"],
       ["game_prompt.txt", "Example game prompt (NOVA-3)"],
       ["system_prompt.txt", "Example system prompt for HTML game gen"],
-      ["README.md", "Full config reference, gotchas, verified results"]
+      ["README.md", "Full config reference, gotchas, verified results"],
+      ["build_pdf.py", "Custom reportlab script for this PDF (Paragraph-wrapped tables)"],
+      ["pdf_spec.json", "JSON spec for this PDF (rebuild with build_pdf.py)"],
+      ["e4b-serena-setup-guide.pdf", "This PDF document"]
     ]},
 
     {"type": "heading", "level": 2, "text": "Quick Start for New Projects"},
